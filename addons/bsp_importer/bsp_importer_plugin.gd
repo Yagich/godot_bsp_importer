@@ -63,6 +63,10 @@ func _get_import_options(_path : String, preset_index : int):
 			{
 				"name" : "entity_remap",
 				"default_value" : { "trigger_example" : "res://triggers/trigger_example.tres" }
+			},
+			{
+				"name" : "post_process_hooks",
+				"default_value": []
 			}]
 		_:
 			return []
@@ -83,6 +87,12 @@ func _import(source_file : String, save_path : String, options, r_platform_varia
 	var bsp_scene := bsp_reader.read_bsp(source_file)
 	if (!bsp_scene):
 		return bsp_scene.error
+
+	var post_process_hooks: Array = options["post_process_hooks"]
+	if !post_process_hooks.is_empty():
+		for hook_path in post_process_hooks:
+			var hook = load(hook_path).new()
+			hook.postprocess(bsp_scene)
 
 	var packed_scene := PackedScene.new()
 	var err := packed_scene.pack(bsp_scene)
