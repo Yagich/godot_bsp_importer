@@ -24,7 +24,8 @@ const CONTENTS_WATER := -3
 
 
 const CLIPNODES_STRUCT_SIZE := (4 + 2 + 2) # 32bit int for plane index, 2 16bit children.
-const NODES_STRUCT_SIZE := (4 + 2 + 2 + 2 * 6 + 2 + 2) # 32bit int for plane index, 2 16bit children.  bbox short, face id, face num
+const NODES_STRUCT_SIZE_Q1BSP := (4 + 2 + 2 + 2 * 6 + 2 + 2) # 32bit int for plane index, 2 16bit children.  bbox short, face id, face num
+const NODES_STRUCT_SIZE_Q1BSP2 := (4 + 4 + 4 + 4 * 6 + 4 + 4) # 32bit int for plane index, 2 32bit children.  bbox int32?, face id, face num
 
 #typedef struct
 #{ long type;                   // Special type of leaf
@@ -40,8 +41,8 @@ const NODES_STRUCT_SIZE := (4 + 2 + 2 + 2 * 6 + 2 + 2) # 32bit int for plane ind
 #  u_char sndlava;              //
 #} dleaf_t;
 
-const LEAF_SIZE := 4 + 4 + 2 * 6 + 2 + 2 + 1 + 1 + 1 + 1
-
+const LEAF_SIZE_Q1BSP := 4 + 4 + 2 * 6 + 2 + 2 + 1 + 1 + 1 + 1
+const LEAF_SIZE_BSP2 := 4 + 4 + 4 * 6 + 4 + 4 + 1 + 1 + 1 + 1
 
 
 class BSPEdge:
@@ -68,20 +69,23 @@ class BSPModelData:
 	var num_leafs : int # For vis?
 	var face_index : int
 	var face_count : int
-	static func get_data_size() -> int:
-		return 2 * 3 * 4 + 3 * 4 + 7 * 4
-	func read_model(file : FileAccess):
-		bound_min = Vector3(file.get_float(), file.get_float(), file.get_float())
-		bound_max = Vector3(file.get_float(), file.get_float(), file.get_float())
-		origin = Vector3(file.get_float(), file.get_float(), file.get_float())
-		node_id0 = file.get_32()
-		node_id1 = file.get_32()
-		node_id2 = file.get_32()
-		node_id3 = file.get_32()
-		num_leafs = file.get_32()
-		face_index = file.get_32()
-		face_count = file.get_32()
-		#print("origin: ", origin, "face_index: ", face_index, "face_count: ", face_count)
+
+const MODEL_DATA_SIZE_Q1_BSP := 2 * 3 * 4 + 3 * 4 + 7 * 4
+
+func read_model_data_q1_bsp(model_data : BSPModelData):
+	# Since some axes are negated here, min/max is funky.
+	var mins := read_vector_convert_scaled()
+	var maxs := read_vector_convert_scaled()
+	model_data.bound_min = Vector3(min(mins.x, maxs.x), min(mins.y, maxs.y), min(mins.z, maxs.z))
+	model_data.bound_max = Vector3(max(mins.x, maxs.x), max(mins.y, maxs.y), max(mins.z, maxs.z))
+	model_data.origin = read_vector_convert_scaled()
+	model_data.node_id0 = file.get_32()
+	model_data.node_id1 = file.get_32()
+	model_data.node_id2 = file.get_32()
+	model_data.node_id3 = file.get_32()
+	model_data.num_leafs = file.get_32()
+	model_data.face_index = file.get_32()
+	model_data.face_count = file.get_32()
 
 
 class BSPModelDataQ2:
@@ -171,7 +175,7 @@ class BSPFace:
 	static func get_data_size_q1bsp() -> int:
 		return 20
 	static func get_data_size_bsp2() -> int: # for bsp2
-		return 20 + 2 + 2 + 2 + 2 + 2 # plane id, side, edge list id, num edges, texinfo id all have an extra 2 bytes
+		return 20 + 2 * 4 # plane id, side, num edges all have an extra 2 bytes going from 16 to 32 bit
 	func print_face():
 		print("BSPFace: plane_id: ", plane_id, " side: ", side, " edge_list_id: ", edge_list_id, " num_edges: ", num_edges, " texinfo_id: ", texinfo_id)
 	func read_face_q1bsp(file : FileAccess) -> int:
@@ -188,15 +192,21 @@ class BSPFace:
 		return get_data_size_q1bsp()
 	func read_face_bsp2(file : FileAccess) -> int:
 		plane_id = file.get_32()
+		#print("plane_id ", plane_id)
 		side = file.get_32()
+		#print("side ", side)
 		edge_list_id = file.get_32()
+		#print("edge_list_id ", edge_list_id)
 		num_edges = file.get_32()
+		#print("num_edges ", num_edges)
 		texinfo_id = file.get_32()
+		#print("texinfo_id ", texinfo_id)
 		light_type = file.get_8()
 		light_base = file.get_8()
 		light_model_0 = file.get_8()
 		light_model_1 = file.get_8()
 		lightmap = file.get_32()
+		#print("lightmap ", lightmap)
 		return get_data_size_bsp2()
 
 
@@ -235,6 +245,10 @@ static func read_vector_convert_unscaled(file : FileAccess) -> Vector3:
 	return convert_vector_from_quake_unscaled(Vector3(file.get_float(), file.get_float(), file.get_float()))
 
 
+func read_vector_convert_scaled() -> Vector3:
+	return convert_vector_from_quake_scaled(Vector3(file.get_float(), file.get_float(), file.get_float()), _unit_scale)
+
+
 var error := ERR_UNCONFIGURED
 var material_path_pattern : String
 var water_template_path : String
@@ -250,7 +264,7 @@ var root_node : Node3D
 var plane_normals : PackedVector3Array
 var plane_distances : PackedFloat32Array
 var model_scenes : Dictionary = {}
-
+var is_bsp2 := false
 var _unit_scale: float = 1.0
 
 var inverse_scale_fac: float = 32.0:
@@ -289,12 +303,13 @@ func read_bsp(source_file : String) -> Node:
 
 	# Read the header
 	var is_q2 := false
-	var is_bsp2 := false
+	is_bsp2 = false
 	var has_textures := true
 	var has_clipnodes := true
 	var has_brush_table := false
 	var bsp_version := file.get_32()
 	var index_bits_32 := false
+	print("BSP version: %d\n" % bsp_version)
 	if (bsp_version == 1347633737): # "IBSP" - Quake 2 BSP format
 		print("IBSP (Quake2?) format - not supported, yet.")
 		is_q2 = true
@@ -302,12 +317,20 @@ func read_bsp(source_file : String) -> Node:
 		has_clipnodes = false
 		has_brush_table = true
 		bsp_version = file.get_32()
+		print("BSP sub-version: %d\n" % bsp_version)
+		
+		file.close()
+		file = null
+		return
+	if (bsp_version == 1112756274): # "2PSB" - depricated extended quake BSP format.
+		print("2PSB format not supported.")
+		file.close()
+		file = null
 		return
 	if (bsp_version == 844124994): # "BSP2" - extended Quake BSP format
-		print("BSP2 format.")
+		print("BSP2 extended Quake format.")
 		is_bsp2 = true
 		index_bits_32 = true
-	print("BSP version: %d\n" % bsp_version)
 	var entity_offset := file.get_32()
 	var entity_size := file.get_32()
 	var planes_offset := file.get_32()
@@ -450,14 +473,19 @@ func read_bsp(source_file : String) -> Node:
 		#print("Textureinfo: ", textureinfos[i].vec_s, " ", textureinfos[i].offset_s, " ", textureinfos[i].vec_t, " ", textureinfos[i].offset_t, " ", textureinfos[i].texture_index)
 
 	# Get model data:
-	var model_data_size := BSPModelData.get_data_size() if !is_q2 else BSPModelDataQ2.get_data_size()
+	var model_data_size := MODEL_DATA_SIZE_Q1_BSP if !is_q2 else BSPModelDataQ2.get_data_size()
 	var num_models := models_size / model_data_size
 	var model_data := []
 	model_data.resize(num_models)
 	for i in num_models:
-		model_data[i] = BSPModelData.new() if !is_q2 else BSPModelDataQ2.get_data_size()
-		file.seek(models_offset + model_data_size * i) # We'll skip around in the file loading data
-		model_data[i].read_model(file)
+		if (is_q2):
+			model_data[i] = BSPModelDataQ2.new()
+			file.seek(models_offset + model_data_size * i) # We'll skip around in the file loading data
+			model_data[i].read_model(file)
+		else:
+			model_data[i] = BSPModelData.new()
+			file.seek(models_offset + model_data_size * i) # We'll skip around in the file loading data
+			read_model_data_q1_bsp(model_data[i])
 
 	file.seek(faces_offset)
 	var face_data_left := faces_size
@@ -474,7 +502,7 @@ func read_bsp(source_file : String) -> Node:
 		if (model_index == 0): # worldspawn
 			needs_import = true # Always import worldspawn.
 			var static_body := StaticBody3D.new()
-			static_body.name = "static_body"
+			static_body.name = "StaticBody"
 			root_node.add_child(static_body, true)
 			static_body.owner = root_node
 			parent_node = static_body
@@ -554,7 +582,6 @@ func read_bsp(source_file : String) -> Node:
 				var tex_scale_y := 1.0 / (_unit_scale * tex_height)
 				#print("normal: ", face_normal)
 				for edge_list_index in range(edge_list_index_start, edge_list_index_start + bsp_face.num_edges):
-				#for edge_list_index in range(edge_list_index_start + bsp_face.num_edges - 1, edge_list_index_start - 1, -1): # Need to go in reverse order
 					var vert_index_0 : int
 					var reverse_order := false
 					var edge_index := edge_list[edge_list_index]
@@ -584,7 +611,7 @@ func read_bsp(source_file : String) -> Node:
 					var array_mesh : ArrayMesh = null
 					array_mesh = surf_tool.commit(array_mesh)
 					mesh_instance.mesh = array_mesh
-					mesh_instance.name = "transparent_mesh"
+					mesh_instance.name = "TransparentMesh"
 					parent_node.add_child(mesh_instance, true)
 					mesh_instance.transform = parent_inv_transform
 					mesh_instance.owner = root_node
@@ -600,7 +627,7 @@ func read_bsp(source_file : String) -> Node:
 				surf_tool.generate_tangents()
 				array_mesh = surf_tool.commit(array_mesh)
 			mesh_instance.mesh = array_mesh
-			mesh_instance.name = "mesh"
+			mesh_instance.name = "Mesh"
 			parent_node.add_child(mesh_instance, true)
 			mesh_instance.transform = parent_inv_transform
 			mesh_instance.owner = root_node
@@ -610,7 +637,7 @@ func read_bsp(source_file : String) -> Node:
 			# Could ultimately read the clip stuff and create convex shapes, but just going to use triangle mesh collision for now.
 			if (USE_TRIANGLE_COLLISION):
 				var collision_shape := CollisionShape3D.new()
-				collision_shape.name = "collision_shape"
+				collision_shape.name = "CollisionShape"
 				collision_shape.shape = mesh_instance.mesh.create_trimesh_shape()
 				parent_node.add_child(collision_shape, true)
 				mesh_instance.transform = parent_inv_transform
@@ -626,12 +653,15 @@ func read_bsp(source_file : String) -> Node:
 					#test_print_planes(file, planes_offset)
 					read_clipnodes_recursive(file, clipnodes_offset)
 				else:
-					print("Reading nodes: ", nodes_offset)
-					file.seek(nodes_offset + bsp_model.node_id0 * NODES_STRUCT_SIZE)
+					var seek_location := nodes_offset + bsp_model.node_id0 * (NODES_STRUCT_SIZE_Q1BSP if !is_bsp2 else NODES_STRUCT_SIZE_Q1BSP2)
+					#print("Reading nodes: ", nodes_offset, " ", bsp_model.node_id0, " location: ", seek_location)
+					file.seek(seek_location)
 					read_nodes_recursive()
 				#print("Array of planes array: ", array_of_planes_array)
-				var model_mins := Vector3(-300, -300, -300) # TODO: Actual mins and maxs
-				var model_maxs := Vector3(300, 300, 300)
+				var model_mins := bsp_model.bound_min;
+				var model_maxs := bsp_model.bound_max;
+				print("Model mins: ", model_mins, " Model maxs: ", model_maxs)
+				print("Origin: ", bsp_model.origin)
 				var model_mins_maxs_planes : Array[Plane]
 				model_mins_maxs_planes.push_back(Plane(Vector3.RIGHT, model_maxs.x))
 				model_mins_maxs_planes.push_back(Plane(Vector3.UP, model_maxs.y))
@@ -641,7 +671,7 @@ func read_bsp(source_file : String) -> Node:
 				model_mins_maxs_planes.push_back(Plane(Vector3.FORWARD, -model_mins.z))
 
 				# Create collision shapes for world
-				create_collision_shapes(parent_node, array_of_planes_array, parent_inv_transform)
+				create_collision_shapes(parent_node, array_of_planes_array, model_mins_maxs_planes, parent_inv_transform)
 
 				# Create collision shapes for water, if we have any
 				if (water_planes_array.size() > 0):
@@ -649,7 +679,7 @@ func read_bsp(source_file : String) -> Node:
 					parent_node.add_child(water_body, true)
 					water_body.transform = parent_inv_transform
 					water_body.owner = root_node
-					create_collision_shapes(water_body, water_planes_array, Transform3D())
+					create_collision_shapes(water_body, water_planes_array, model_mins_maxs_planes, Transform3D())
 	file.close()
 	file = null
 	return root_node
@@ -736,6 +766,16 @@ func convert_entity_dict_to_scene(ent_dict_array : Array):
 							var value = string_value
 							if (key == "spawnflags"):
 								value = value.to_int()
+
+							# Allow scenes to have custom implementations of this so they can remap values or whatever
+							# Returning true means it was handled.
+							if (scene.has_method("set_import_value")):
+								if (!scene.get_script().is_tool()):
+									printerr(scene.name + " has 'set_import_value()' function but must have @tool set to work for imports.")
+								else:
+									if (scene.set_import_value(key, string_value)):
+										continue
+
 							var dest_value = scene.get(key) # Se if we can figure out the type of the destination value
 							if (dest_value != null):
 								var dest_type := typeof(dest_value)
@@ -748,16 +788,14 @@ func convert_entity_dict_to_scene(ent_dict_array : Array):
 										value = string_value.to_float()
 									TYPE_STRING:
 										value = string_value
+									TYPE_STRING_NAME:
+										value = string_value
 									TYPE_VECTOR3:
 										value = string_to_vector3(string_value)
 									_:
-										print("Key value type not handled for ", key, " : ", dest_type)
-
-							# Allow scenes to have custom implementations of this so they can remap values or whatever
-							if (scene.has_method("set_import_value")):
-								scene.set_import_value(key, string_value)
-							else:
-								scene.set(key, value)
+										printerr("Key value type not handled for ", key, " : ", dest_type)
+										value = string_value # Try setting it to the string value and hope for the best.
+							scene.set(key, value)
 							
 	print("model_scenes: ", model_scenes)
 
@@ -800,32 +838,37 @@ static func angle_to_basis(angle_string : String) -> Basis:
 	return basis
 
 
-func create_collision_shapes(body : Node3D, planes_array, parent_inv_transform : Transform3D):
+func create_collision_shapes(body : Node3D, planes_array, model_mins_maxs_planes, parent_inv_transform : Transform3D):
+	print("Create collision shapes.")
 	for i in planes_array.size():
 		var plane_indexes : PackedInt32Array = planes_array[i]
 		var convex_planes : Array[Plane]
-		#convex_planes.append_array(model_mins_maxs_planes)
+		#print("Planes index: ", i)
+		convex_planes.append_array(model_mins_maxs_planes)
 		for plane_index in plane_indexes:
 			# sign of 0 is 0, so we offset the index by 1.
 			var plane := Plane(plane_normals[abs(plane_index) - 1] * sign(plane_index), (plane_distances[abs(plane_index) - 1]) * sign(plane_index))
 			convex_planes.push_back(plane)
 			#print("Plane ", plane_index, ": ", plane)
 		var convex_points := convert_planes_to_points(convex_planes)
-		var collision_shape := CollisionShape3D.new()
-		#print("Convex planes: ", convex_planes)
-		collision_shape.name = "collision%d" % i
-		collision_shape.shape = ConvexPolygonShape3D.new()
-		collision_shape.shape.points = convex_points
-		collision_shape.transform = parent_inv_transform
-		#print("Convex points: ", convex_points)
-		body.add_child(collision_shape, true)
-		collision_shape.owner = root_node
+		if (convex_points.size() < 3):
+			print("Convex shape creation failed ", i)
+		else:
+			var collision_shape := CollisionShape3D.new()
+			#print("Convex planes: ", convex_planes)
+			collision_shape.name = "Collision%d" % i
+			collision_shape.shape = ConvexPolygonShape3D.new()
+			collision_shape.shape.points = convex_points
+			collision_shape.transform = parent_inv_transform
+			#print("Convex points: ", convex_points)
+			body.add_child(collision_shape, true)
+			collision_shape.owner = root_node
 
 
 func read_nodes_recursive():
 	var plane_index := file.get_32()
-	var child0 := unsigned16_to_signed(file.get_16()) # Note: Need to support BSP2, maybe.
-	var child1 := unsigned16_to_signed(file.get_16())
+	var child0 := unsigned16_to_signed(file.get_16()) if !is_bsp2 else unsigned32_to_signed(file.get_32())
+	var child1 := unsigned16_to_signed(file.get_16()) if !is_bsp2 else unsigned32_to_signed(file.get_32())
 	#print("plane: ", plane_index, " child0: ", child0, " child1: ", child1)
 	# Hack upon hack -- store the plane index offset by 1, so we can negate the first index
 	array_of_planes.push_back(-(plane_index + 1)) # Stupid nonsense where the front plane is negative.  Store the index as negative so we know to negate the plane later
@@ -838,9 +881,10 @@ func read_nodes_recursive():
 
 func handle_node_child(child_value : int):
 	if (child_value < 0): # less than 0 means its a leaf.
-		var leaf_id = ~child_value
-		#print("leaf_id: ", leaf_id)
-		file.seek(leaves_offset + leaf_id * LEAF_SIZE)
+		var leaf_id := ~child_value
+		var file_offset := leaves_offset + leaf_id * (LEAF_SIZE_Q1BSP if !is_bsp2 else LEAF_SIZE_BSP2)
+		#print("leaf_id: ", leaf_id, " file offset: ", file_offset)
+		file.seek(file_offset)
 		var leaf_type := unsigned32_to_signed(file.get_32())
 		#print("leaf_type: ", leaf_type)
 		if (leaf_type == CONTENTS_SOLID):
@@ -848,13 +892,13 @@ func handle_node_child(child_value : int):
 		elif (leaf_type == CONTENTS_WATER):
 			water_planes_array.push_back(array_of_planes.duplicate())
 	else:
-		file.seek(nodes_offset + child_value * NODES_STRUCT_SIZE)
+		file.seek(nodes_offset + child_value * (NODES_STRUCT_SIZE_Q1BSP if !is_bsp2 else NODES_STRUCT_SIZE_Q1BSP2))
 		read_nodes_recursive()
 
 
 func read_clipnodes_recursive(file : FileAccess, clipnodes_offset : int):
 	var plane_index := file.get_32()
-	var child0 := unsigned16_to_signed(file.get_16())
+	var child0 := unsigned16_to_signed(file.get_16()) # Need to handle BSP2 if we ever use this
 	var child1 := unsigned16_to_signed(file.get_16())
 	print("plane: ", plane_index, " child0: ", child0, " child1: ", child1)
 	array_of_planes.push_back(-plane_index) # Stupid nonsense where the front plane is negative.  Store the index as negative so we know to negate the plane later
